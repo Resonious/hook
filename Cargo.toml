@@ -7,5 +7,6 @@ edition = "2021"
 
 [dependencies]
 hyper = { version = "0.14.27", features = ["full"] }
+lazy_static = "1.4.0"
 tokio = { version = "1.30.0", features = ["full"] }
 uuid = { version = "1.4.1", features = ["fast-rng", "v4"] }
