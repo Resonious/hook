@@ -4,7 +4,7 @@ use std::convert::Infallible;
 use hyper::body::{Bytes, HttpBody};
 use hyper::http::request::Parts;
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Method, Request, Response, Server, Uri, HeaderMap};
+use hyper::{Body, HeaderMap, Method, Request, Response, Server, Uri};
 
 use lazy_static::lazy_static;
 use tokio::sync::{mpsc, RwLock};
@@ -45,9 +45,9 @@ async fn serve(request: Request<Body>) -> Result<Response<Body>, Infallible> {
     println!("{id} {} {}", parts.method, parts.uri.path());
 
     if parts.method == Method::GET {
-        return serve_get(id, parts.uri.clone()).await;
+        serve_get(id, parts.uri.clone()).await
     } else {
-        return serve_post(id, parts, req_body).await;
+        serve_post(id, parts, req_body).await
     }
 }
 
@@ -108,7 +108,8 @@ async fn serve_post(id: Uuid, parts: Parts, mut body: Body) -> Result<Response<B
             let Some(pipe) = pipes.by_path.get_mut(parts.uri.path()) else {
                 return Ok(Response::new(Body::empty()));
             };
-            let mut new_senders: Vec<mpsc::Sender<PipeEntry>> = Vec::with_capacity(senders_to_delete.len());
+            let mut new_senders: Vec<mpsc::Sender<PipeEntry>> =
+                Vec::with_capacity(senders_to_delete.len());
 
             for (i, delete) in senders_to_delete.iter().enumerate() {
                 if !delete {
@@ -141,7 +142,7 @@ async fn serve_get(id: Uuid, uri: Uri) -> Result<Response<Body>, Infallible> {
         let pipe = match pipes.by_path.entry(path.clone()) {
             hash_map::Entry::Occupied(o) => o.into_mut(),
             hash_map::Entry::Vacant(v) => v.insert(Pipe {
-                id: id.clone(),
+                id,
                 path: path.clone(),
                 senders: Vec::new(),
                 last_received: None,
@@ -152,15 +153,13 @@ async fn serve_get(id: Uuid, uri: Uri) -> Result<Response<Body>, Infallible> {
 
     tokio::spawn(async move {
         macro_rules! send {
-            ($e:expr) => {
-                {
-                    let vec = $e;
-                    if let Err(e) = body_sender.send_data(Bytes::copy_from_slice(&vec)).await {
-                        println!("{id} failed to send to listener {:?}", e);
-                        break;
-                    }
+            ($e:expr) => {{
+                let vec = $e;
+                if let Err(e) = body_sender.send_data(Bytes::copy_from_slice(&vec)).await {
+                    println!("{id} failed to send to listener {:?}", e);
+                    break;
                 }
-            };
+            }};
         }
 
         while let Some(entry) = pipe_receiver.recv().await {
