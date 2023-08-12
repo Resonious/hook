@@ -1,17 +1,24 @@
 use std::collections::{hash_map, HashMap};
 use std::convert::Infallible;
+use std::net::{SocketAddrV6, Ipv6Addr, Ipv4Addr, SocketAddr};
 
 use hyper::body::{Bytes, HttpBody};
 use hyper::http::request::Parts;
+use hyper::http::uri::Scheme;
+use hyper::server::conn::AddrIncoming;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, HeaderMap, Method, Request, Response, Server, StatusCode, Uri};
+use hyper::server::accept;
 
 use lazy_static::lazy_static;
+use tls_listener::TlsListener;
 use tokio::sync::{mpsc, RwLock};
 
 use askama::Template;
 
 use uuid::Uuid;
+
+mod tls;
 
 struct Pipe {
     id: Uuid,
@@ -42,16 +49,15 @@ lazy_static! {
         by_path: HashMap::new(),
         counter: 0,
     });
+    pub static ref HOOK_URL: String =
+        std::env::var("HOOK_URL").unwrap_or_else(|_| "http://localhost:3005".to_string());
 }
 
 static FAVICON_BYTES: &[u8; 53870] = include_bytes!("favicon.ico");
 
-#[cfg(not(debug_assertions))]
-static APP_URL: &str = "https://hook.snd.one";
-#[cfg(debug_assertions)]
-static APP_URL: &str = "http://localhost:3005";
-
-async fn serve(request: Request<Body>) -> Result<Response<Body>, Infallible> {
+/// This is the actual "app". It's the bit that lets you curl and stream in
+/// POSTS from other sources. Also serves some basic HTML for browsers.
+async fn serve_app(request: Request<Body>) -> Result<Response<Body>, Infallible> {
     let (parts, req_body) = request.into_parts();
 
     let id = Uuid::new_v4();
@@ -79,7 +85,17 @@ async fn serve(request: Request<Body>) -> Result<Response<Body>, Infallible> {
     }
 }
 
+/// When HTTPS is available, this will service all requests to port 80, redirecting
+/// everything to HTTPS.
+async fn serve_non_https(request: Request<Body>) -> Result<Response<Body>, Infallible> {
+    // TODO: actual logic. redirect to https, maybe serve static file if needed later...
+    Ok(serve_browser().await)
+}
+
+/// For now this just serves a simple HTML document.
 async fn serve_browser() -> Response<Body> {
+    println!("Serving HTML landing page");
+
     let template = BrowserView {};
     let html = template
         .render()
@@ -89,13 +105,15 @@ async fn serve_browser() -> Response<Body> {
     let mut response = Response::new(body);
 
     if let Err(e) = body_sender.send_data(html.into()).await {
-        eprintln!("Failed to send favicon: {:?}", e);
+        eprintln!("Failed to send HTML: {:?}", e);
         *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
     }
 
     response
 }
 
+/// This handles POST requests, so is basically the "webhook handler".
+/// In response, we dump all request info to everyone who is listening via curl and GET.
 async fn serve_post(id: Uuid, parts: Parts, mut body: Body) -> Response<Body> {
     let mut senders_to_delete = Vec::<bool>::with_capacity(128);
     let mut need_to_delete = false;
@@ -171,13 +189,15 @@ async fn serve_post(id: Uuid, parts: Parts, mut body: Body) -> Response<Body> {
     Response::new(Body::empty())
 }
 
+/// Serves only curl GETs. Keeps connection open forever so that you can receive
+/// POSTs in real time and see their headers and body.
 async fn serve_get(id: Uuid, uri: Uri) -> Response<Body> {
     let path = uri.path().to_string();
 
     let (mut body_sender, body) = Body::channel();
 
     {
-        let host = APP_URL;
+        let host: &str = &HOOK_URL;
         let path = uri.path();
         let vec = format!("Your URL is {host}{path}\ncurl -d \"Hello World!\" {host}{path}\n\n")
             .into_bytes();
@@ -228,6 +248,7 @@ async fn serve_get(id: Uuid, uri: Uri) -> Response<Body> {
     Response::new(body)
 }
 
+/// Inlined favicon.ico
 async fn serve_favicon() -> Response<Body> {
     let (mut body_sender, body) = Body::channel();
     let mut response = Response::new(body);
@@ -245,22 +266,58 @@ async fn serve_favicon() -> Response<Body> {
 
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // For every connection, we must make a `Service` to handle all
-    // incoming HTTP requests on said connection.
-    let make_svc = make_service_fn(|_conn| {
-        // This is the `Service` that will handle the connection.
-        // `service_fn` is a helper to convert a function that
-        // returns a Response into a `Service`.
-        async { Ok::<_, Infallible>(service_fn(serve)) }
-    });
+    let app_url: Uri = HOOK_URL
+        .parse()
+        .expect("HOOK_URL environment variable malformed");
 
-    let addr = ([0, 0, 0, 0], 3005).into();
+    let tls_acceptor = if let (Some("https"), Some(host)) = (app_url.scheme_str(), app_url.host()) {
+        let tls_config_path = format!("/etc/letsencrypt/renewal/{host}.conf");
+        let acceptor = tls::acceptor(&tls_config_path);
 
-    let server = Server::bind(&addr).serve(make_svc);
+        match acceptor {
+            Ok(x) => Some(x),
+            Err(e) => {
+                eprintln!("Failed to read TLS config: {:?}", e);
+                None
+            }
+        }
+    } else { None };
 
-    println!("Listening on http://{}", addr);
+    if let Some(tls) = tls_acceptor {
+        let app_service = make_service_fn(|_conn| {
+            async { Ok::<_, Infallible>(service_fn(serve_app)) }
+        });
+        let control_service = make_service_fn(|_conn| {
+            async { Ok::<_, Infallible>(service_fn(serve_non_https)) }
+        });
 
-    server.await?;
+        println!("Starting in https mode");
+
+        let http_ipv6_addr: SocketAddr = (Ipv6Addr::UNSPECIFIED, 80).into();
+        let https_ipv6_addr: SocketAddr = (Ipv6Addr::UNSPECIFIED, 443).into();
+
+        let http_server = Server::bind(&http_ipv6_addr).serve(control_service);
+
+        let incoming = TlsListener::new(tls, AddrIncoming::bind(&https_ipv6_addr)?);
+        let https_server = Server::builder(accept::from_stream(incoming)).serve(app_service);
+
+        println!("Listening on {} (port 80 and 443)", app_url);
+
+        http_server.await?;
+        https_server.await?;
+    } else {
+        let app_service = make_service_fn(|_conn| {
+            async { Ok::<_, Infallible>(service_fn(serve_app)) }
+        });
+
+        println!("Starting in http-only (dev) mode");
+        let addr4 = ([0, 0, 0, 0], 3005).into();
+        let server4 = Server::bind(&addr4).serve(app_service);
+
+        println!("Listening on {}", addr4);
+
+        server4.await?;
+    }
 
     Ok(())
 }
