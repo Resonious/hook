@@ -4,10 +4,12 @@ use std::convert::Infallible;
 use hyper::body::{Bytes, HttpBody};
 use hyper::http::request::Parts;
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, HeaderMap, Method, Request, Response, Server, Uri, StatusCode};
+use hyper::{Body, HeaderMap, Method, Request, Response, Server, StatusCode, Uri};
 
 use lazy_static::lazy_static;
 use tokio::sync::{mpsc, RwLock};
+
+use askama::Template;
 
 use uuid::Uuid;
 
@@ -31,6 +33,10 @@ struct Pipes {
     counter: usize,
 }
 
+#[derive(Template)]
+#[template(path = "view.html")]
+struct BrowserView {}
+
 lazy_static! {
     static ref PIPES: RwLock<Pipes> = RwLock::new(Pipes {
         by_path: HashMap::new(),
@@ -40,21 +46,54 @@ lazy_static! {
 
 static FAVICON_BYTES: &[u8; 53870] = include_bytes!("favicon.ico");
 
+#[cfg(not(debug_assertions))]
+static APP_URL: &str = "https://hook.snd.one";
+#[cfg(debug_assertions)]
+static APP_URL: &str = "http://localhost:3005";
+
 async fn serve(request: Request<Body>) -> Result<Response<Body>, Infallible> {
     let (parts, req_body) = request.into_parts();
 
     let id = Uuid::new_v4();
     println!("{id} {} {}", parts.method, parts.uri.path());
 
+    let user_agent = parts.headers.get("user-agent");
+    let is_curl = match user_agent {
+        Some(value) => value
+            .to_str()
+            .map(|s| s.starts_with("curl"))
+            .unwrap_or(false),
+        None => false,
+    };
+
     if parts.method == Method::GET {
         if parts.uri.path() == "/favicon.ico" {
             Ok(serve_favicon().await)
-        } else {
+        } else if is_curl {
             Ok(serve_get(id, parts.uri.clone()).await)
+        } else {
+            Ok(serve_browser().await)
         }
     } else {
         Ok(serve_post(id, parts, req_body).await)
     }
+}
+
+async fn serve_browser() -> Response<Body> {
+    let template = BrowserView {};
+    let html = template
+        .render()
+        .unwrap_or_else(|_| "<h1>error</h1>".to_string());
+    let (mut body_sender, body) = Body::channel();
+
+    let mut response = Response::new(body);
+
+    if let Err(e) = body_sender.send_data(html.into()).await {
+        eprintln!("Failed to send favicon: {:?}", e);
+        *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+    }
+
+    response
 }
 
 async fn serve_post(id: Uuid, parts: Parts, mut body: Body) -> Response<Body> {
@@ -138,8 +177,11 @@ async fn serve_get(id: Uuid, uri: Uri) -> Response<Body> {
     let (mut body_sender, body) = Body::channel();
 
     {
-        let vec = format!("Your URL is {uri}\ncurl -d \"Hello World!\" {uri}\n\n").into_bytes();
-        let _ = body_sender.send_data(Bytes::copy_from_slice(&vec)).await;
+        let host = APP_URL;
+        let path = uri.path();
+        let vec = format!("Your URL is {host}{path}\ncurl -d \"Hello World!\" {host}{path}\n\n")
+            .into_bytes();
+        let _ = body_sender.send_data(vec.into()).await;
     }
 
     let (pipe_sender, mut pipe_receiver) = mpsc::channel::<PipeEntry>(128);
@@ -190,7 +232,10 @@ async fn serve_favicon() -> Response<Body> {
     let (mut body_sender, body) = Body::channel();
     let mut response = Response::new(body);
 
-    if let Err(e) = body_sender.send_data(Bytes::from_static(FAVICON_BYTES)).await {
+    if let Err(e) = body_sender
+        .send_data(Bytes::from_static(FAVICON_BYTES))
+        .await
+    {
         eprintln!("Failed to send favicon: {:?}", e);
         *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
     }
