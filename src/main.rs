@@ -4,7 +4,7 @@ use std::convert::Infallible;
 use hyper::body::{Bytes, HttpBody};
 use hyper::http::request::Parts;
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, HeaderMap, Method, Request, Response, Server, Uri};
+use hyper::{Body, HeaderMap, Method, Request, Response, Server, Uri, StatusCode};
 
 use lazy_static::lazy_static;
 use tokio::sync::{mpsc, RwLock};
@@ -38,6 +38,8 @@ lazy_static! {
     });
 }
 
+static FAVICON_BYTES: &[u8; 53870] = include_bytes!("favicon.ico");
+
 async fn serve(request: Request<Body>) -> Result<Response<Body>, Infallible> {
     let (parts, req_body) = request.into_parts();
 
@@ -45,13 +47,17 @@ async fn serve(request: Request<Body>) -> Result<Response<Body>, Infallible> {
     println!("{id} {} {}", parts.method, parts.uri.path());
 
     if parts.method == Method::GET {
-        serve_get(id, parts.uri.clone()).await
+        if parts.uri.path() == "/favicon.ico" {
+            Ok(serve_favicon().await)
+        } else {
+            Ok(serve_get(id, parts.uri.clone()).await)
+        }
     } else {
-        serve_post(id, parts, req_body).await
+        Ok(serve_post(id, parts, req_body).await)
     }
 }
 
-async fn serve_post(id: Uuid, parts: Parts, mut body: Body) -> Result<Response<Body>, Infallible> {
+async fn serve_post(id: Uuid, parts: Parts, mut body: Body) -> Response<Body> {
     let mut senders_to_delete = Vec::<bool>::with_capacity(128);
     let mut need_to_delete = false;
     let mut valid_senders_present = false;
@@ -59,7 +65,7 @@ async fn serve_post(id: Uuid, parts: Parts, mut body: Body) -> Result<Response<B
     {
         let pipes = PIPES.read().await;
         let Some(pipe) = pipes.by_path.get(parts.uri.path()) else {
-            return Ok(Response::new(Body::empty()));
+            return Response::new(Body::empty());
         };
         pipe_counter = pipes.counter;
 
@@ -71,7 +77,7 @@ async fn serve_post(id: Uuid, parts: Parts, mut body: Body) -> Result<Response<B
                 }
                 Err(e) => {
                     println!("{id} failed to receive body ({e:?})");
-                    return Ok(Response::new(Body::empty()));
+                    return Response::new(Body::empty());
                 }
             }
         }
@@ -100,13 +106,13 @@ async fn serve_post(id: Uuid, parts: Parts, mut body: Body) -> Result<Response<B
         let mut pipes = PIPES.write().await;
 
         if pipes.counter != pipe_counter {
-            return Ok(Response::new(Body::empty()));
+            return Response::new(Body::empty());
         }
         pipes.counter += 1;
 
         if valid_senders_present {
             let Some(pipe) = pipes.by_path.get_mut(parts.uri.path()) else {
-                return Ok(Response::new(Body::empty()));
+                return Response::new(Body::empty());
             };
             let mut new_senders: Vec<mpsc::Sender<PipeEntry>> =
                 Vec::with_capacity(senders_to_delete.len());
@@ -123,10 +129,10 @@ async fn serve_post(id: Uuid, parts: Parts, mut body: Body) -> Result<Response<B
         }
     }
 
-    Ok(Response::new(Body::empty()))
+    Response::new(Body::empty())
 }
 
-async fn serve_get(id: Uuid, uri: Uri) -> Result<Response<Body>, Infallible> {
+async fn serve_get(id: Uuid, uri: Uri) -> Response<Body> {
     let path = uri.path().to_string();
 
     let (mut body_sender, body) = Body::channel();
@@ -177,7 +183,19 @@ async fn serve_get(id: Uuid, uri: Uri) -> Result<Response<Body>, Infallible> {
         }
     });
 
-    Ok(Response::new(body))
+    Response::new(body)
+}
+
+async fn serve_favicon() -> Response<Body> {
+    let (mut body_sender, body) = Body::channel();
+    let mut response = Response::new(body);
+
+    if let Err(e) = body_sender.send_data(Bytes::from_static(FAVICON_BYTES)).await {
+        eprintln!("Failed to send favicon: {:?}", e);
+        *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+    }
+
+    response
 }
 
 #[tokio::main]
