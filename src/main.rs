@@ -1,17 +1,17 @@
 use std::collections::{hash_map, HashMap};
 use std::convert::Infallible;
-use std::net::{SocketAddrV6, Ipv6Addr, Ipv4Addr, SocketAddr};
+use std::net::{Ipv6Addr, SocketAddr};
 
 use futures_util::future::ready;
 use futures_util::stream::StreamExt;
 
 use hyper::body::{Bytes, HttpBody};
 use hyper::http::request::Parts;
-use hyper::http::uri::Scheme;
+
+use hyper::server::accept;
 use hyper::server::conn::AddrIncoming;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, HeaderMap, Method, Request, Response, Server, StatusCode, Uri};
-use hyper::server::accept;
 
 use lazy_static::lazy_static;
 use tls_listener::TlsListener;
@@ -91,7 +91,7 @@ async fn serve_app(request: Request<Body>) -> Result<Response<Body>, Infallible>
 
 /// When HTTPS is available, this will service all requests to port 80, redirecting
 /// everything to HTTPS.
-async fn serve_non_https(request: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn serve_non_https(_request: Request<Body>) -> Result<Response<Body>, Infallible> {
     // TODO: actual logic. redirect to https, maybe serve static file if needed later...
     Ok(serve_browser().await)
 }
@@ -285,15 +285,15 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 None
             }
         }
-    } else { None };
+    } else {
+        None
+    };
 
     if let Some(tls) = tls_acceptor {
-        let app_service = make_service_fn(|_conn| {
-            async { Ok::<_, Infallible>(service_fn(serve_app)) }
-        });
-        let control_service = make_service_fn(|_conn| {
-            async { Ok::<_, Infallible>(service_fn(serve_non_https)) }
-        });
+        let app_service =
+            make_service_fn(|_conn| async { Ok::<_, Infallible>(service_fn(serve_app)) });
+        let control_service =
+            make_service_fn(|_conn| async { Ok::<_, Infallible>(service_fn(serve_non_https)) });
 
         println!("Starting in https mode");
 
@@ -302,14 +302,15 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         let http_server = Server::bind(&http_ipv6_addr).serve(control_service);
 
-        let incoming = TlsListener::new(tls, AddrIncoming::bind(&https_ipv6_addr)?).filter(|conn| {
-            if let Err(e) = conn {
-                eprintln!("Error with incoming TLS connection: {e:?}");
-                ready(false)
-            } else {
-                ready(true)
-            }
-        });
+        let incoming =
+            TlsListener::new(tls, AddrIncoming::bind(&https_ipv6_addr)?).filter(|conn| {
+                if let Err(e) = conn {
+                    eprintln!("Error with incoming TLS connection: {e:?}");
+                    ready(false)
+                } else {
+                    ready(true)
+                }
+            });
         let https_server = Server::builder(accept::from_stream(incoming)).serve(app_service);
 
         println!("Listening on {} (port 80 and 443)", app_url);
@@ -322,9 +323,8 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             println!("Server closed");
         }
     } else {
-        let app_service = make_service_fn(|_conn| {
-            async { Ok::<_, Infallible>(service_fn(serve_app)) }
-        });
+        let app_service =
+            make_service_fn(|_conn| async { Ok::<_, Infallible>(service_fn(serve_app)) });
 
         println!("Starting in http-only (dev) mode");
         let addr4 = ([0, 0, 0, 0], 3005).into();
