@@ -2,6 +2,9 @@ use std::collections::{hash_map, HashMap};
 use std::convert::Infallible;
 use std::net::{SocketAddrV6, Ipv6Addr, Ipv4Addr, SocketAddr};
 
+use futures_util::future::ready;
+use futures_util::stream::StreamExt;
+
 use hyper::body::{Bytes, HttpBody};
 use hyper::http::request::Parts;
 use hyper::http::uri::Scheme;
@@ -16,6 +19,7 @@ use tokio::sync::{mpsc, RwLock};
 
 use askama::Template;
 
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 mod tls;
@@ -298,13 +302,25 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         let http_server = Server::bind(&http_ipv6_addr).serve(control_service);
 
-        let incoming = TlsListener::new(tls, AddrIncoming::bind(&https_ipv6_addr)?);
+        let incoming = TlsListener::new(tls, AddrIncoming::bind(&https_ipv6_addr)?).filter(|conn| {
+            if let Err(e) = conn {
+                eprintln!("Error with incoming TLS connection: {e:?}");
+                ready(false)
+            } else {
+                ready(true)
+            }
+        });
         let https_server = Server::builder(accept::from_stream(incoming)).serve(app_service);
 
         println!("Listening on {} (port 80 and 443)", app_url);
 
-        http_server.await?;
-        https_server.await?;
+        let mut servers = JoinSet::new();
+        servers.spawn(http_server);
+        servers.spawn(https_server);
+
+        while let Some(_exited) = servers.join_next().await {
+            println!("Server closed");
+        }
     } else {
         let app_service = make_service_fn(|_conn| {
             async { Ok::<_, Infallible>(service_fn(serve_app)) }

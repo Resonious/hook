@@ -64,31 +64,19 @@ pub fn acceptor(file_path: &str) -> Result<Acceptor> {
         }
     };
 
-    let cert_file = File::open(&config.cert)?;
-    let mut cert_reader = BufReader::new(cert_file);
-    let certs = rustls_pemfile::certs(&mut cert_reader)?
+    let chain_file = File::open(&config.fullchain)?;
+    let mut chain_reader = BufReader::new(chain_file);
+    let chain: Vec<_> = rustls_pemfile::certs(&mut chain_reader)?
         .into_iter()
-        .map(Certificate);
-
-    // let mut chain_file = File::open(&config.chain)?;
-    // let mut chain_reader = BufReader::new(chain_file);
-    // let chain = rustls_pemfile::certs(&mut chain_reader)?;
+        .map(Certificate)
+        .collect();
 
     Ok(Arc::new(
         ServerConfig::builder()
             .with_safe_defaults()
             .with_no_client_auth()
-            .with_single_cert(certs.collect(), PrivateKey(key_bytes))
+            .with_single_cert(chain, PrivateKey(key_bytes))
             .expect("TLS setup failed"),
     )
     .into())
 }
-
-// fn main() -> Result<()> {
-//     let config = parse_config("path/to/your/config/file")?;
-//     println!("cert: {}", config.cert);
-//     println!("privkey: {}", config.privkey);
-//     println!("chain: {}", config.chain);
-//     println!("fullchain: {}", config.fullchain);
-//     Ok(())
-// }
