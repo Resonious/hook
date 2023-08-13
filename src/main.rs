@@ -255,26 +255,54 @@ async fn serve_get(id: Uuid, uri: Uri) -> Response<Body> {
     tokio::spawn(async move {
         macro_rules! send {
             ($e:expr) => {{
-                let vec = $e;
-                if let Err(e) = body_sender.send_data(Bytes::copy_from_slice(&vec)).await {
-                    println!("{id} failed to send to listener {:?}", e);
+                if let Err(e) = body_sender.send_data(Bytes::from($e)).await {
+                    println!("{id} failed to send to GET listener {:?}", e);
                     break;
                 }
             }};
         }
 
         while let Some(entry) = pipe_receiver.recv().await {
-            send!(format!("{} {}\n", entry.method, entry.uri).into_bytes());
-            for (key, value) in entry.headers.iter() {
-                send!(format!("{key}: {value:?}\n").into_bytes());
-            }
-            send!(*b"\n");
+            send!(format!("{} {}\n", entry.method, entry.uri));
 
-            if let Err(e) = body_sender.send_data(entry.body).await {
-                println!("{id} failed to send to listener {:?}", e);
-                break;
+            let mut is_json = false;
+
+            for (key, value) in entry.headers.iter() {
+                if key == "content-type" && value.as_bytes().starts_with(b"application/json") {
+                    is_json = true;
+                }
+                send!(format!("{key}: {value:?}\n"));
             }
-            send!(*b"\n\n");
+            send!(Bytes::copy_from_slice(b"\n"));
+
+            if is_json {
+                match serde_json::from_slice::<serde_json::Value>(&entry.body) {
+                    Ok(value) => {
+                        match colored_json::to_colored_json(&value, colored_json::ColorMode::On) {
+                            Ok(colorized) => {
+                                send!(colorized);
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to colorize JSON {e:?}");
+                                match serde_json::to_string_pretty(&value) {
+                                    Ok(pretty) => send!(pretty),
+                                    Err(e2) => {
+                                        eprintln!("Also failed to prettify JSON (!?) {e2:?}");
+                                        send!(value.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Invalid JSON {e:?}");
+                        send!(entry.body);
+                    }
+                }
+            } else {
+                send!(entry.body);
+            }
+            send!(Bytes::copy_from_slice(b"\n\n"));
         }
     });
 
