@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Result};
+use std::io::{BufRead, BufReader, Result};
 use std::sync::Arc;
 
 use tokio_rustls::rustls::{Certificate, PrivateKey, ServerConfig};

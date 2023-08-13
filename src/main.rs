@@ -8,6 +8,7 @@ use futures_util::stream::StreamExt;
 use hyper::body::{Bytes, HttpBody};
 use hyper::http::request::Parts;
 
+use hyper::http::uri::Scheme;
 use hyper::server::accept;
 use hyper::server::conn::AddrIncoming;
 use hyper::service::{make_service_fn, service_fn};
@@ -91,9 +92,37 @@ async fn serve_app(request: Request<Body>) -> Result<Response<Body>, Infallible>
 
 /// When HTTPS is available, this will service all requests to port 80, redirecting
 /// everything to HTTPS.
-async fn serve_non_https(_request: Request<Body>) -> Result<Response<Body>, Infallible> {
-    // TODO: actual logic. redirect to https, maybe serve static file if needed later...
-    Ok(serve_browser().await)
+async fn serve_non_https(request: Request<Body>) -> Result<Response<Body>, Infallible> {
+    let app_uri: Uri = HOOK_URL.parse().unwrap();
+    let request_uri = request.uri().clone();
+
+    let redirect_uri = Uri::builder()
+        .scheme(Scheme::HTTPS)
+        .authority(app_uri.authority().unwrap().as_str())
+        .path_and_query(
+            request_uri
+                .path_and_query()
+                .map(|x| x.as_str())
+                .unwrap_or("/"),
+        )
+        .build()
+        .map(|uri| uri.to_string())
+        .unwrap_or_else(|e| {
+            eprintln!("ERROR! Failed to generate redirect URL {e:?}");
+            "https://snd.one/error".to_string()
+        });
+
+    match Response::builder()
+        .status(StatusCode::PERMANENT_REDIRECT)
+        .header("location", redirect_uri)
+        .body("Hint: add -L to your curl command\n".into())
+    {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            eprintln!("Failed to serve redirect...? {e:?}");
+            Ok(Response::new(Body::empty()))
+        }
+    }
 }
 
 /// For now this just serves a simple HTML document.
@@ -273,6 +302,9 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app_url: Uri = HOOK_URL
         .parse()
         .expect("HOOK_URL environment variable malformed");
+    if app_url.authority().is_none() {
+        panic!("HOOK_URL environment variable has bad authority section");
+    }
 
     let tls_acceptor = if let (Some("https"), Some(host)) = (app_url.scheme_str(), app_url.host()) {
         let tls_config_path = format!("/etc/letsencrypt/renewal/{host}.conf");
