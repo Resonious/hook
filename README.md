@@ -1,10 +1,12 @@
 # Hook
 
+https://hook.snd.one
+
 This is a very simple webhook inspection service. Think https://webhook.site but with no setup and no web interface. For hook, all you need is `curl`.
 
 # Live
 
-This is hosted live at `https://hook.snd.one`.
+This is hosted live at https://hook.snd.one.
 
 # Usage
 
