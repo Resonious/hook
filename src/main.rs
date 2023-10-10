@@ -13,6 +13,7 @@ use hyper::server::accept;
 use hyper::server::conn::AddrIncoming;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, HeaderMap, Method, Request, Response, Server, StatusCode, Uri};
+use hyper::http::response;
 
 use lazy_static::lazy_static;
 use tls_listener::TlsListener;
@@ -77,16 +78,19 @@ async fn serve_app(request: Request<Body>) -> Result<Response<Body>, Infallible>
         None => false,
     };
 
-    if parts.method == Method::GET {
-        if parts.uri.path() == "/favicon.ico" {
-            Ok(serve_favicon().await)
-        } else if is_curl {
-            Ok(serve_get(id, parts.uri.clone()).await)
-        } else {
-            Ok(serve_browser().await)
+    match parts.method {
+        Method::POST | Method::PUT | Method::PATCH => Ok(serve_post(id, parts, req_body).await),
+        Method::OPTIONS => Ok(serve_options(parts).await),
+
+        _ => {
+            if parts.uri.path() == "/favicon.ico" {
+                Ok(serve_favicon().await)
+            } else if is_curl {
+                Ok(serve_get(id, parts).await)
+            } else {
+                Ok(serve_browser().await)
+            }
         }
-    } else {
-        Ok(serve_post(id, parts, req_body).await)
     }
 }
 
@@ -219,12 +223,37 @@ async fn serve_post(id: Uuid, parts: Parts, mut body: Body) -> Response<Body> {
         }
     }
 
-    Response::new(Body::empty())
+    let mut response = Response::builder();
+    response = insert_origin(response, &parts);
+    response.body(Body::empty()).unwrap_or_else(|e| {
+        eprintln!("Built invalid response!! {:?}", e);
+        Response::new(Body::empty())
+    })
+}
+
+async fn serve_options(parts: Parts) -> Response<Body> {
+    let mut response = Response::builder();
+    response = insert_origin(response, &parts);
+    response.body(Body::empty()).unwrap_or_else(|e| {
+        eprintln!("Built invalid response!! {:?}", e);
+        Response::new(Body::empty())
+    })
+}
+
+fn insert_origin(response: response::Builder, parts: &Parts) -> response::Builder {
+    if let Some(origin) = parts.headers.get("origin") {
+        return response
+            .header("access-control-allow-origin", origin)
+            .header("vary", "Origin");
+    } else {
+        return response;
+    }
 }
 
 /// Serves only curl GETs. Keeps connection open forever so that you can receive
 /// POSTs in real time and see their headers and body.
-async fn serve_get(id: Uuid, uri: Uri) -> Response<Body> {
+async fn serve_get(id: Uuid, parts: Parts) -> Response<Body> {
+    let uri = parts.uri.clone();
     let path = uri.path().to_string();
 
     let (mut body_sender, body) = Body::channel();
@@ -306,7 +335,12 @@ async fn serve_get(id: Uuid, uri: Uri) -> Response<Body> {
         }
     });
 
-    Response::new(body)
+    let mut response = Response::builder();
+    response = insert_origin(response, &parts);
+    response.body(body).unwrap_or_else(|e| {
+        eprintln!("Built invalid response!! {:?}", e);
+        Response::new(Body::empty())
+    })
 }
 
 /// Inlined favicon.ico
