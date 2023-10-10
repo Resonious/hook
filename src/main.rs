@@ -8,8 +8,8 @@ use futures_util::stream::StreamExt;
 use hyper::body::{Bytes, HttpBody};
 use hyper::http::request::Parts;
 
-use hyper::http::response;
 use hyper::http::uri::Scheme;
+use hyper::http::{response, HeaderValue};
 use hyper::server::accept;
 use hyper::server::conn::AddrIncoming;
 use hyper::service::{make_service_fn, service_fn};
@@ -67,16 +67,19 @@ async fn serve_app(request: Request<Body>) -> Result<Response<Body>, Infallible>
     let (parts, req_body) = request.into_parts();
 
     let id = Uuid::new_v4();
-    println!("{id} {} {}", parts.method, parts.uri.path());
 
-    let user_agent = parts.headers.get("user-agent");
-    let is_curl = match user_agent {
-        Some(value) => value
-            .to_str()
-            .map(|s| s.starts_with("curl"))
-            .unwrap_or(false),
-        None => false,
-    };
+    let getter_type =
+        if parts.headers.get("accept") == Some(&HeaderValue::from_static("text/event-stream")) {
+            GetterType::EventStream
+        } else if parts.headers.get("user-agent").map(|x| x.to_str().map(|s| s.starts_with("curl")).unwrap_or(false)).unwrap_or(false) {
+            GetterType::Curl
+        } else {
+            GetterType::Other
+        };
+
+    println!("{id} {} {} {:?}", parts.method, parts.uri.path(), getter_type);
+
+    let is_listener = getter_type != GetterType::Other;
 
     match parts.method {
         Method::POST | Method::PUT | Method::PATCH => Ok(serve_post(id, parts, req_body).await),
@@ -85,8 +88,8 @@ async fn serve_app(request: Request<Body>) -> Result<Response<Body>, Infallible>
         _ => {
             if parts.uri.path() == "/favicon.ico" {
                 Ok(serve_favicon().await)
-            } else if is_curl {
-                Ok(serve_get(id, parts).await)
+            } else if is_listener {
+                Ok(serve_get(id, parts, getter_type).await)
             } else {
                 Ok(serve_browser().await)
             }
@@ -255,9 +258,22 @@ fn empty_response(parts: &Parts) -> Response<Body> {
     })
 }
 
+#[derive(PartialEq, Clone, Copy, Debug)]
+enum GetterType {
+    Curl,
+    EventStream,
+    Other,
+}
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+enum ContentType {
+    Json,
+    Other,
+}
+
 /// Serves only curl GETs. Keeps connection open forever so that you can receive
 /// POSTs in real time and see their headers and body.
-async fn serve_get(id: Uuid, parts: Parts) -> Response<Body> {
+async fn serve_get(id: Uuid, parts: Parts, getter_type: GetterType) -> Response<Body> {
     let uri = parts.uri.clone();
     let path = uri.path().to_string();
 
@@ -299,42 +315,60 @@ async fn serve_get(id: Uuid, parts: Parts) -> Response<Body> {
         while let Some(entry) = pipe_receiver.recv().await {
             send!(format!("{} {}\n", entry.method, entry.uri));
 
-            let mut is_json = false;
+            let mut content_type = ContentType::Other;
 
             for (key, value) in entry.headers.iter() {
                 if key == "content-type" && value.as_bytes().starts_with(b"application/json") {
-                    is_json = true;
+                    content_type = ContentType::Json;
                 }
-                send!(format!("{key}: {value:?}\n"));
+                if getter_type == GetterType::Curl {
+                    match value.to_str() {
+                        Ok(s) => send!(format!("{key}: {s}\n")),
+                        Err(_) => send!(format!("{key}: {value:?}\n")),
+                    }
+                }
             }
             send!(Bytes::copy_from_slice(b"\n"));
 
-            if is_json {
-                match serde_json::from_slice::<serde_json::Value>(&entry.body) {
-                    Ok(value) => {
-                        match colored_json::to_colored_json(&value, colored_json::ColorMode::On) {
-                            Ok(colorized) => {
-                                send!(colorized);
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to colorize JSON {e:?}");
-                                match serde_json::to_string_pretty(&value) {
-                                    Ok(pretty) => send!(pretty),
-                                    Err(e2) => {
-                                        eprintln!("Also failed to prettify JSON (!?) {e2:?}");
-                                        send!(value.to_string());
+            match (getter_type, content_type) {
+                (GetterType::Curl, ContentType::Json) => {
+                    match serde_json::from_slice::<serde_json::Value>(&entry.body) {
+                        Ok(value) => {
+                            match colored_json::to_colored_json(&value, colored_json::ColorMode::On)
+                            {
+                                Ok(colorized) => {
+                                    send!(colorized);
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to colorize JSON {e:?}");
+                                    match serde_json::to_string_pretty(&value) {
+                                        Ok(pretty) => send!(pretty),
+                                        Err(e2) => {
+                                            eprintln!("Also failed to prettify JSON (!?) {e2:?}");
+                                            send!(value.to_string());
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    Err(e) => {
-                        eprintln!("Invalid JSON {e:?}");
-                        send!(entry.body);
+                        Err(e) => {
+                            eprintln!("Invalid JSON {e:?}");
+                            send!(entry.body);
+                        }
                     }
                 }
-            } else {
-                send!(entry.body);
+
+                (GetterType::EventStream, _) => match std::str::from_utf8(entry.body.as_ref()) {
+                    Ok(utf8) => {
+                        send!(format!("data: {utf8}"));
+                    }
+                    Err(e) => {
+                        eprintln!("Got invalid utf8 {e:?}");
+                        send!(format!("data: {{\"error\": \"invalid utf8\"}}"));
+                    }
+                },
+
+                _ => send!(entry.body),
             }
             send!(Bytes::copy_from_slice(b"\n\n"));
         }
@@ -342,6 +376,12 @@ async fn serve_get(id: Uuid, parts: Parts) -> Response<Body> {
 
     let mut response = Response::builder();
     response = insert_origin(response, &parts);
+
+    if getter_type == GetterType::EventStream {
+        response = response.header("content-type", "text/event-stream");
+        response = response.header("content-type", "cache-control: no-store");
+    }
+
     response.body(body).unwrap_or_else(|e| {
         eprintln!("Built invalid response!! {:?}", e);
         Response::new(Body::empty())
