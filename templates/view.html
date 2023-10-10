@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
@@ -17,10 +18,45 @@
     h1 {
       font-family: 'Gajraj One';
     }
+
+    #received {
+      display: flex;
+      flex-direction: column;
+      align-items: start;
+    }
+
+    #received pre {
+      padding: 1em;
+      margin: 0;
+
+      border-radius: 8px;
+      opacity: 0;
+      transform: translateX(999px);
+    }
+
+    #received pre:nth-child(odd) {
+      background-color: lightblue;
+      margin-top: 2em;
+
+      border-bottom-left-radius: 0;
+      border-bottom-right-radius: 0;
+
+      transition: transform .5s;
+    }
+
+    #received pre:nth-child(even) {
+      background-color: antiquewhite;
+
+      border-top-left-radius: 0;
+      border-top-right-radius: 0;
+
+      transition: opacity .5s;
+    }
   </style>
 
   <title>snd.one</title>
 </head>
+
 <body>
   <h1>hook.snd.one</h1>
 
@@ -28,6 +64,9 @@
     Try this:
     <pre id="get"></pre>
     <pre id="post"></pre>
+  </div>
+
+  <div id="received">
   </div>
 
   <script>
@@ -43,6 +82,38 @@
 
     get.textContent = `curl ${url}`;
     post.textContent = `curl -d 'Hello, world!' ${url}`;
+
+    {
+      const received = document.getElementById('received');
+      const evt = new EventSource(url);
+
+      const addReceived = (text) => {
+        const el = document.createElement('pre');
+        el.textContent = text;
+        received.prepend(el);
+
+        setTimeout(() => {
+          el.style.transform = 'translateX(0)';
+          el.style.opacity = '1';
+        }, 1);
+      }
+
+      evt.addEventListener('headers', e => {
+        const headers = JSON.parse(e.data);
+        let text = '';
+        for (const name in headers) {
+          text += name + ': ' + headers[name] + "\n";
+        }
+        text += `${new Date().toLocaleString()}\n`;
+        addReceived(text);
+      });
+
+      evt.addEventListener('message', e => {
+        const message = e.data;
+        addReceived(message);
+      });
+    }
   </script>
 </body>
+
 </html>

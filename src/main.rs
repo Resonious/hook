@@ -71,13 +71,23 @@ async fn serve_app(request: Request<Body>) -> Result<Response<Body>, Infallible>
     let getter_type =
         if parts.headers.get("accept") == Some(&HeaderValue::from_static("text/event-stream")) {
             GetterType::EventStream
-        } else if parts.headers.get("user-agent").map(|x| x.to_str().map(|s| s.starts_with("curl")).unwrap_or(false)).unwrap_or(false) {
+        } else if parts
+            .headers
+            .get("user-agent")
+            .map(|x| x.to_str().map(|s| s.starts_with("curl")).unwrap_or(false))
+            .unwrap_or(false)
+        {
             GetterType::Curl
         } else {
             GetterType::Other
         };
 
-    println!("{id} {} {} {:?}", parts.method, parts.uri.path(), getter_type);
+    println!(
+        "{id} {} {} {:?}",
+        parts.method,
+        parts.uri.path(),
+        getter_type
+    );
 
     let is_listener = getter_type != GetterType::Other;
 
@@ -360,15 +370,32 @@ async fn serve_get(id: Uuid, parts: Parts, getter_type: GetterType) -> Response<
                     }
                 }
 
-                (GetterType::EventStream, _) => match std::str::from_utf8(entry.body.as_ref()) {
-                    Ok(utf8) => {
-                        send!(format!("data: {utf8}"));
+                (GetterType::EventStream, _) => {
+                    send!(Bytes::copy_from_slice(b"event: headers\ndata: {"));
+                    let len = entry.headers.len();
+                    let mut i = 0;
+                    for (key, value) in entry.headers.iter() {
+                        match value.to_str() {
+                            Ok(s) => send!(format!("\"{key}\": \"{s}\"")),
+                            Err(_) => send!(format!("\"{key}\": {value:?}")),
+                        }
+                        i += 1;
+                        if i != len {
+                            send!(Bytes::copy_from_slice(b", "));
+                        }
                     }
-                    Err(e) => {
-                        eprintln!("Got invalid utf8 {e:?}");
-                        send!(format!("data: {{\"error\": \"invalid utf8\"}}"));
+                    send!(Bytes::copy_from_slice(b"}\n\n"));
+
+                    match std::str::from_utf8(entry.body.as_ref()) {
+                        Ok(utf8) => {
+                            send!(format!("data: {utf8}"));
+                        }
+                        Err(e) => {
+                            eprintln!("Got invalid utf8 {e:?}");
+                            send!(format!("data: {{\"error\": \"invalid utf8\"}}"));
+                        }
                     }
-                },
+                }
 
                 _ => send!(entry.body),
             }
