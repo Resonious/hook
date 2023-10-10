@@ -8,12 +8,12 @@ use futures_util::stream::StreamExt;
 use hyper::body::{Bytes, HttpBody};
 use hyper::http::request::Parts;
 
+use hyper::http::response;
 use hyper::http::uri::Scheme;
 use hyper::server::accept;
 use hyper::server::conn::AddrIncoming;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, HeaderMap, Method, Request, Response, Server, StatusCode, Uri};
-use hyper::http::response;
 
 use lazy_static::lazy_static;
 use tls_listener::TlsListener;
@@ -154,12 +154,12 @@ async fn serve_browser() -> Response<Body> {
 async fn serve_post(id: Uuid, parts: Parts, mut body: Body) -> Response<Body> {
     let mut senders_to_delete = Vec::<bool>::with_capacity(128);
     let mut need_to_delete = false;
-    let mut valid_senders_present = false;
+    let mut valid_senders: usize = 0;
     let pipe_counter;
     {
         let pipes = PIPES.read().await;
         let Some(pipe) = pipes.by_path.get(parts.uri.path()) else {
-            return Response::new(Body::empty());
+            return empty_response(&parts);
         };
         pipe_counter = pipes.counter;
 
@@ -171,7 +171,7 @@ async fn serve_post(id: Uuid, parts: Parts, mut body: Body) -> Response<Body> {
                 }
                 Err(e) => {
                     println!("{id} failed to receive body ({e:?})");
-                    return Response::new(Body::empty());
+                    return empty_response(&parts);
                 }
             }
         }
@@ -191,7 +191,7 @@ async fn serve_post(id: Uuid, parts: Parts, mut body: Body) -> Response<Body> {
                 need_to_delete = true;
             } else {
                 senders_to_delete.push(false);
-                valid_senders_present = true;
+                valid_senders += 1;
             }
         }
     }
@@ -200,13 +200,13 @@ async fn serve_post(id: Uuid, parts: Parts, mut body: Body) -> Response<Body> {
         let mut pipes = PIPES.write().await;
 
         if pipes.counter != pipe_counter {
-            return Response::new(Body::empty());
+            return empty_response(&parts);
         }
         pipes.counter += 1;
 
-        if valid_senders_present {
+        if valid_senders > 0 {
             let Some(pipe) = pipes.by_path.get_mut(parts.uri.path()) else {
-                return Response::new(Body::empty());
+                return empty_response(&parts);
             };
             let mut new_senders: Vec<mpsc::Sender<PipeEntry>> =
                 Vec::with_capacity(senders_to_delete.len());
@@ -223,8 +223,9 @@ async fn serve_post(id: Uuid, parts: Parts, mut body: Body) -> Response<Body> {
         }
     }
 
-    let mut response = Response::builder();
-    response = insert_origin(response, &parts);
+    let mut response = insert_origin(Response::builder(), &parts);
+    response = response.header("snd-received", valid_senders);
+
     response.body(Body::empty()).unwrap_or_else(|e| {
         eprintln!("Built invalid response!! {:?}", e);
         Response::new(Body::empty())
@@ -232,12 +233,7 @@ async fn serve_post(id: Uuid, parts: Parts, mut body: Body) -> Response<Body> {
 }
 
 async fn serve_options(parts: Parts) -> Response<Body> {
-    let mut response = Response::builder();
-    response = insert_origin(response, &parts);
-    response.body(Body::empty()).unwrap_or_else(|e| {
-        eprintln!("Built invalid response!! {:?}", e);
-        Response::new(Body::empty())
-    })
+    empty_response(&parts)
 }
 
 fn insert_origin(response: response::Builder, parts: &Parts) -> response::Builder {
@@ -248,6 +244,15 @@ fn insert_origin(response: response::Builder, parts: &Parts) -> response::Builde
     } else {
         return response;
     }
+}
+
+fn empty_response(parts: &Parts) -> Response<Body> {
+    let mut response = Response::builder();
+    response = insert_origin(response, &parts);
+    response.body(Body::empty()).unwrap_or_else(|e| {
+        eprintln!("Built invalid response!! {:?}", e);
+        Response::new(Body::empty())
+    })
 }
 
 /// Serves only curl GETs. Keeps connection open forever so that you can receive
