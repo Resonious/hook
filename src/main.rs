@@ -243,7 +243,8 @@ fn insert_origin(response: response::Builder, parts: &Parts) -> response::Builde
     if let Some(origin) = parts.headers.get("origin") {
         return response
             .header("access-control-allow-origin", origin)
-            .header("access-control-allow-headers", "snd-received, content-type")
+            .header("access-control-allow-headers", "content-type")
+            .header("access-control-expose-headers", "snd-received")
             .header("vary", "Origin");
     } else {
         return response;
