@@ -77,7 +77,11 @@ async fn serve_app(request: Request<Body>) -> Result<Response<Body>, Infallible>
                     .status(200)
                     .body(bytes.into())
                     .unwrap_or_default());
+            } else {
+                eprintln!("could not read file {path}");
             }
+        } else {
+            eprintln!("path split failed??");
         }
     }
 
