@@ -66,6 +66,21 @@ static FAVICON_BYTES: &[u8; 53870] = include_bytes!("favicon.ico");
 async fn serve_app(request: Request<Body>) -> Result<Response<Body>, Infallible> {
     let (parts, req_body) = request.into_parts();
 
+    let path = parts.uri.path();
+    if path.starts_with("/.well-known/acme-challenge/") {
+        let split = path.split("/");
+        if let Some(file) = split.last() {
+            let read_path = format!("public/.well-known/acme-challenge/{file}");
+            let read_result = std::fs::read(read_path);
+            if let Ok(bytes) = read_result {
+                return Ok(Response::builder()
+                    .status(200)
+                    .body(bytes.into())
+                    .unwrap_or_default());
+            }
+        }
+    }
+
     let id = Uuid::new_v4();
 
     let getter_type =
@@ -82,12 +97,7 @@ async fn serve_app(request: Request<Body>) -> Result<Response<Body>, Infallible>
             GetterType::Other
         };
 
-    println!(
-        "{id} {} {} {:?}",
-        parts.method,
-        parts.uri.path(),
-        getter_type
-    );
+    println!("{id} {} {} {:?}", parts.method, path, getter_type);
 
     let is_listener = getter_type != GetterType::Other;
 
