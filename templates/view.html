@@ -1,119 +1,156 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-<head>
-  <meta charset="UTF-8">
-  <meta http-equiv="X-UA-Compatible" content="IE=edge">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Gajraj+One&display=swap"
+            rel="stylesheet"
+        />
 
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Gajraj+One&display=swap" rel="stylesheet">
+        <style>
+            body {
+                font-family: sans-serif;
+            }
 
-  <style>
-    body {
-      font-family: sans-serif;
-    }
+            h1 {
+                font-family: "Gajraj One";
+            }
 
-    h1 {
-      font-family: 'Gajraj One';
-    }
+            #received {
+                display: flex;
+                flex-direction: column;
+                align-items: start;
+            }
 
-    #received {
-      display: flex;
-      flex-direction: column;
-      align-items: start;
-    }
+            #received pre {
+                padding: 1em;
+                margin: 0;
 
-    #received pre {
-      padding: 1em;
-      margin: 0;
+                border-radius: 8px;
+                opacity: 0;
+                transform: translateX(999px);
+            }
 
-      border-radius: 8px;
-      opacity: 0;
-      transform: translateX(999px);
-    }
+            #received pre:nth-child(odd) {
+                background-color: lightblue;
+                margin-top: 2em;
 
-    #received pre:nth-child(odd) {
-      background-color: lightblue;
-      margin-top: 2em;
+                border-bottom-left-radius: 0;
+                border-bottom-right-radius: 0;
 
-      border-bottom-left-radius: 0;
-      border-bottom-right-radius: 0;
+                transition: transform 0.5s;
+            }
 
-      transition: transform .5s;
-    }
+            #received pre:nth-child(even) {
+                background-color: antiquewhite;
 
-    #received pre:nth-child(even) {
-      background-color: antiquewhite;
+                border-top-left-radius: 0;
+                border-top-right-radius: 0;
 
-      border-top-left-radius: 0;
-      border-top-right-radius: 0;
+                transition: opacity 0.5s;
+            }
 
-      transition: opacity .5s;
-    }
-  </style>
+            .code {
+                font-family: monospace;
+            }
 
-  <title>snd.one</title>
-</head>
+            .highlight {
+                color: red;
+                font-weight: bold;
+            }
 
-<body>
-  <h1>hook.snd.one</h1>
+            #protip {
+                margin-top: 2em;
+            }
+        </style>
 
-  <div>
-    Try this:
-    <pre id="get"></pre>
-    <pre id="post"></pre>
-  </div>
+        <title>snd.one</title>
+    </head>
 
-  <div id="received">
-  </div>
+    <body>
+        <h1>hook.snd.one</h1>
 
-  <script>
-    const get = document.getElementById('get');
-    const post = document.getElementById('post');
+        <div>
+            Try this:
+            <pre class="code" id="get"></pre>
+            <div class="code" id="post"></div>
+        </div>
 
-    const url = new URL(location.href);
+        <div id="protip">
+            <small
+                >P.S. the <span class="highlight" id="ident"></span> can be
+                anything.</small
+            >
+        </div>
 
-    if (url.pathname === '/') {
-      const suggestedId = crypto.getRandomValues(new Uint32Array(1))[0].toString(16);
-      url.pathname = `/${suggestedId}`;
-    }
+        <div id="received"></div>
 
-    get.textContent = `curl ${url}`;
-    post.textContent = `curl -d 'Hello, world!' ${url}`;
+        <script>
+            const get = document.getElementById("get");
+            const post = document.getElementById("post");
+            const protip = document.getElementById("protip");
 
-    {
-      const received = document.getElementById('received');
-      const evt = new EventSource(url);
+            const url = new URL(location.href);
 
-      const addReceived = (text) => {
-        const el = document.createElement('pre');
-        el.textContent = text;
-        received.prepend(el);
+            let suggestedId;
+            if (url.pathname === "/") {
+                suggestedId = crypto
+                    .getRandomValues(new Uint32Array(1))[0]
+                    .toString(16);
+                document.getElementById("ident").textContent = suggestedId;
+            } else {
+                protip.remove();
+            }
 
-        setTimeout(() => {
-          el.style.transform = 'translateX(0)';
-          el.style.opacity = '1';
-        }, 1);
-      }
+            const appendSuggestedPath = (el) => {
+                if (suggestedId) {
+                    const path = document.createElement("span");
+                    path.textContent = suggestedId;
+                    path.classList.add("highlight");
+                    el.append(path);
+                }
+            };
 
-      evt.addEventListener('headers', e => {
-        const headers = JSON.parse(e.data);
-        let text = '';
-        for (const name in headers) {
-          text += name + ': ' + headers[name] + "\n";
-        }
-        text += `${new Date().toLocaleString()}\n`;
-        addReceived(text);
-      });
+            get.textContent = `curl ${url}`;
+            appendSuggestedPath(get);
+            post.textContent = `curl -d 'Hello, world!' ${url}`;
+            appendSuggestedPath(post);
 
-      evt.addEventListener('message', e => {
-        const message = e.data;
-        addReceived(message);
-      });
-    }
-  </script>
-</body>
+            {
+                const received = document.getElementById("received");
+                const evt = new EventSource(url);
 
+                const addReceived = (text) => {
+                    const el = document.createElement("pre");
+                    el.textContent = text;
+                    received.prepend(el);
+
+                    setTimeout(() => {
+                        el.style.transform = "translateX(0)";
+                        el.style.opacity = "1";
+                    }, 1);
+                };
+
+                evt.addEventListener("headers", (e) => {
+                    const headers = JSON.parse(e.data);
+                    let text = "";
+                    for (const name in headers) {
+                        text += name + ": " + headers[name] + "\n";
+                    }
+                    text += `${new Date().toLocaleString()}\n`;
+                    addReceived(text);
+                });
+
+                evt.addEventListener("message", (e) => {
+                    const message = e.data;
+                    addReceived(message);
+                });
+            }
+        </script>
+    </body>
 </html>
