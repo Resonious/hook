@@ -422,7 +422,7 @@ async fn serve_get(id: Uuid, parts: Parts, getter_type: GetterType) -> Response<
 
     if getter_type == GetterType::EventStream {
         response = response.header("content-type", "text/event-stream");
-        response = response.header("content-type", "cache-control: no-store");
+        response = response.header("cache-control", "no-store");
     }
 
     response.body(body).unwrap_or_else(|e| {
