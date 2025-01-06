@@ -37,20 +37,22 @@
             }
 
             #received pre:nth-child(odd) {
-                background-color: lightblue;
                 margin-top: 2em;
 
                 border-bottom-left-radius: 0;
                 border-bottom-right-radius: 0;
 
+                border: 1px solid black;
+                border-bottom: none;
+
                 transition: transform 0.5s;
             }
 
             #received pre:nth-child(even) {
-                background-color: antiquewhite;
-
                 border-top-left-radius: 0;
                 border-top-right-radius: 0;
+
+                border: 1px solid black;
 
                 transition: opacity 0.5s;
             }
@@ -120,7 +122,7 @@
             appendSuggestedPath(get);
             post.textContent = `curl -d 'Hello, world!' ${url}`;
             appendSuggestedPath(post);
-            url.pathname = suggestedId;
+            if (suggestedId) url.pathname = suggestedId;
 
             {
                 const received = document.getElementById("received");
