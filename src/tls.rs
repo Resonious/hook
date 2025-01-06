@@ -6,9 +6,7 @@ use tokio_rustls::rustls::{Certificate, PrivateKey, ServerConfig};
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub cert: String,
     pub privkey: String,
-    pub chain: String,
     pub fullchain: String,
 }
 
@@ -16,28 +14,28 @@ pub fn parse_config(file_path: &str) -> Result<Config> {
     let file = File::open(file_path)?;
     let reader = BufReader::new(file);
 
-    let mut cert = String::new();
+    // let mut cert = String::new();
     let mut privkey = String::new();
-    let mut chain = String::new();
+    // let mut chain = String::new();
     let mut fullchain = String::new();
 
     for line in reader.lines() {
         let line = line?;
         if line.starts_with("cert =") {
-            cert = line["cert =".len()..].trim().to_string();
+            // cert = line["cert =".len()..].trim().to_string();
         } else if line.starts_with("privkey =") {
             privkey = line["privkey =".len()..].trim().to_string();
         } else if line.starts_with("chain =") {
-            chain = line["chain =".len()..].trim().to_string();
+            // chain = line["chain =".len()..].trim().to_string();
         } else if line.starts_with("fullchain =") {
             fullchain = line["fullchain =".len()..].trim().to_string();
         }
     }
 
     Ok(Config {
-        cert,
+        // cert,
         privkey,
-        chain,
+        // chain,
         fullchain,
     })
 }

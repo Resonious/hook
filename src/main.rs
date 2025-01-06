@@ -28,9 +28,7 @@ mod tls;
 
 struct Pipe {
     id: Uuid,
-    path: String,
     senders: Vec<mpsc::Sender<PipeEntry>>,
-    last_received: Option<PipeEntry>,
 }
 
 #[derive(Clone)]
@@ -320,9 +318,7 @@ async fn serve_get(id: Uuid, parts: Parts, getter_type: GetterType) -> Response<
             hash_map::Entry::Occupied(o) => o.into_mut(),
             hash_map::Entry::Vacant(v) => v.insert(Pipe {
                 id,
-                path: path.clone(),
                 senders: Vec::new(),
-                last_received: None,
             }),
         };
         pipe.senders.push(pipe_sender);
