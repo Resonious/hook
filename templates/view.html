@@ -120,6 +120,7 @@
             appendSuggestedPath(get);
             post.textContent = `curl -d 'Hello, world!' ${url}`;
             appendSuggestedPath(post);
+            url.pathname = suggestedId;
 
             {
                 const received = document.getElementById("received");
